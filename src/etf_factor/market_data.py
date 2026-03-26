@@ -27,25 +27,18 @@ REQUIRED_COLUMNS = [
 
 def load_market_data_dict(
     source_db: Path,
-    start: str,
-    limit_symbols: int | None = None,
 ) -> MarketDataBundle:
     conn = duckdb.connect(str(source_db), read_only=True)
     query = """
         SELECT symbol, trade_date, open, high, low, close, volume, amount
         FROM etf_daily
-        WHERE trade_date >= ?
         ORDER BY symbol, trade_date
     """
-    df = conn.execute(query, [start]).df()
+    df = conn.execute(query).df()
     conn.close()
 
     if df.empty:
         return MarketDataBundle(data_dict={}, universe_mask=pd.DataFrame())
-
-    if limit_symbols is not None:
-        keep_symbols = df["symbol"].drop_duplicates().head(limit_symbols)
-        df = df[df["symbol"].isin(keep_symbols)].copy()
 
     missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing:
@@ -88,3 +81,12 @@ def apply_universe_mask(frame: pd.DataFrame, universe_mask: pd.DataFrame | None)
     if common_cols:
         masked.loc[:, common_cols] = masked.loc[:, common_cols].where(universe_mask.loc[masked.index, common_cols])
     return masked
+
+
+def get_source_latest_trade_date(source_db: Path):
+    conn = duckdb.connect(str(source_db), read_only=True)
+    row = conn.execute("SELECT MAX(trade_date) FROM etf_daily").fetchone()
+    conn.close()
+    if row is None or row[0] is None:
+        raise RuntimeError("etf_daily 中没有可用数据")
+    return row[0]
