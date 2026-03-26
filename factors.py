@@ -7,16 +7,11 @@ import numpy as np
 import pandas as pd
 
 
-def _factor_key(factor_name: str, params: dict) -> str:
-    payload = json.dumps(params, sort_keys=True, ensure_ascii=False)
-    digest = md5(f"{factor_name}|{payload}".encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
-    return f"{factor_name}_{digest}"
-
-
 def factor_identity(factor_func, params: dict) -> tuple[str, str, str]:
     factor_name = factor_func.__name__
     params_json = json.dumps(params, sort_keys=True, ensure_ascii=False)
-    factor_key = _factor_key(factor_name, params)
+    digest = md5(f"{factor_name}|{params_json}".encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    factor_key = f"{factor_name}_{digest}"
     return factor_key, factor_name, params_json
 
 
