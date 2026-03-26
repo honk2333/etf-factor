@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_etf_factor_symbol_date
 ON etf_factor (symbol, trade_date);
 """
 
+
 def connect_db(path: Path, read_only: bool = False) -> duckdb.DuckDBPyConnection:
     if not read_only:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +56,7 @@ def load_market_data(source_db: Path):
     conn.close()
 
     if df.empty:
-        return {}, pd.DataFrame()
+        return {}
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     data_dict: dict[str, pd.DataFrame] = {}
@@ -63,24 +64,15 @@ def load_market_data(source_db: Path):
         frame = sub_df.sort_values("trade_date").set_index("trade_date").copy()
         prev_close = frame["close"].shift(1)
         frame["pct_chg"] = frame["close"].pct_change()
-        frame["amplitude"] = (frame["high"] - frame["low"]) / prev_close.replace(0, pd.NA)
-        frame["amplitude"] = frame["amplitude"].fillna((frame["high"] - frame["low"]) / frame["close"].replace(0, pd.NA))
+        frame["amplitude"] = (frame["high"] - frame["low"]) / prev_close.replace(
+            0, pd.NA
+        )
+        frame["amplitude"] = frame["amplitude"].fillna(
+            (frame["high"] - frame["low"]) / frame["close"].replace(0, pd.NA)
+        )
         data_dict[str(symbol)] = frame
 
-    universe_mask = pd.concat(
-        {symbol: frame["close"].notna() for symbol, frame in data_dict.items()}, axis=1
-    )
-    universe_mask.columns = universe_mask.columns.astype(str)
-    universe_mask = universe_mask.sort_index()
-    return data_dict, universe_mask
-
-
-def apply_universe_mask(frame: pd.DataFrame, universe_mask: pd.DataFrame) -> pd.DataFrame:
-    masked = frame.copy()
-    common_cols = [c for c in masked.columns if c in universe_mask.columns]
-    if common_cols:
-        masked.loc[:, common_cols] = masked.loc[:, common_cols].where(universe_mask.loc[masked.index, common_cols])
-    return masked
+    return data_dict
 
 
 def get_latest_trade_date(source_db: Path):
@@ -100,15 +92,18 @@ def get_factor_latest_trade_date(conn, factor_key: str):
     return row[0] if row and row[0] is not None else None
 
 
-def compute_factor_matrix(data_dict: dict[str, pd.DataFrame], factor_func, universe_mask: pd.DataFrame, **params) -> pd.DataFrame:
+def compute_factor_matrix(
+    data_dict: dict[str, pd.DataFrame], factor_func, **params
+) -> pd.DataFrame:
     raw_factor = {symbol: factor_func(df, **params) for symbol, df in data_dict.items()}
     factor_df = pd.concat(raw_factor, axis=1)
     factor_df.columns = factor_df.columns.astype(str)
-    factor_df = factor_df.sort_index()
-    return apply_universe_mask(factor_df, universe_mask)
+    return factor_df.sort_index()
 
 
-def replace_factor_values(conn, factor_key: str, factor_name: str, params_json: str, factor_df: pd.DataFrame) -> int:
+def replace_factor_values(
+    conn, factor_key: str, factor_name: str, params_json: str, factor_df: pd.DataFrame
+) -> int:
     long_df = (
         factor_df.rename_axis(index="trade_date", columns="symbol")
         .reset_index()
@@ -136,7 +131,7 @@ def replace_factor_values(conn, factor_key: str, factor_name: str, params_json: 
 
 
 def update_factors(source_db: Path, factor_db: Path, force: bool = False):
-    data_dict, universe_mask = load_market_data(source_db)
+    data_dict = load_market_data(source_db)
     if not data_dict:
         raise RuntimeError("未从 etf-data 读取到可用 ETF 日线数据")
 
@@ -160,8 +155,10 @@ def update_factors(source_db: Path, factor_db: Path, force: bool = False):
                     print(f"进度: {count}/{total}")
                 continue
 
-            factor_df = compute_factor_matrix(data_dict, factor_func, universe_mask, **params)
-            rows_written += replace_factor_values(conn, factor_key, factor_name, params_json, factor_df)
+            factor_df = compute_factor_matrix(data_dict, factor_func, **params)
+            rows_written += replace_factor_values(
+                conn, factor_key, factor_name, params_json, factor_df
+            )
             refreshed += 1
             count += 1
             if count % 10 == 0 or count == total:
@@ -180,9 +177,15 @@ def update_factors(source_db: Path, factor_db: Path, force: bool = False):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ETF factor data management")
-    parser.add_argument("--source-db", default=str(SOURCE_DB_PATH), help="上游日线 DuckDB 路径")
-    parser.add_argument("--factor-db", default=str(FACTOR_DB_PATH), help="因子 DuckDB 路径")
-    parser.add_argument("--force", action="store_true", help="忽略最新日期检查，强制重算并覆盖")
+    parser.add_argument(
+        "--source-db", default=str(SOURCE_DB_PATH), help="上游日线 DuckDB 路径"
+    )
+    parser.add_argument(
+        "--factor-db", default=str(FACTOR_DB_PATH), help="因子 DuckDB 路径"
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="忽略最新日期检查，强制重算并覆盖"
+    )
     return parser.parse_args()
 
 
