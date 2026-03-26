@@ -1,0 +1,3 @@
+[submodule "etf-data"]
+	path = etf-data
+	url = git@github.com:honk2333/etf-data.git

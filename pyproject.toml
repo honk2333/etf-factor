@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etf-factor"
+version = "0.1.0"
+description = "ETF factor data management built on DuckDB"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.1",
+  "pandas>=2.2",
+  "numpy>=1.26",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

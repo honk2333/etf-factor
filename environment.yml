@@ -1,0 +1,8 @@
+name: multifactor-etf
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - duckdb>=1.1
+  - pandas>=2.2
+  - numpy>=1.26
