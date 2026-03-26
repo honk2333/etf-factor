@@ -3,14 +3,14 @@
 这个项目只做一件事：
 
 - 从 `etf-data/data/etf_daily.duckdb` 读取 ETF 日线数据
-- 计算因子
+- 计算全部因子
 - 把结果写进自己的 DuckDB 表 `etf_factor`
 
-项目文件尽量收缩，只保留：
+项目文件只保留：
 
-- `main.py`：主程序
-- `factors.py`：因子定义和注册表
-- `etf-data/`：只读上游 submodule
+- `main.py`
+- `factors.py`
+- `etf-data/`
 
 ## 环境
 
@@ -18,41 +18,27 @@
 conda activate multifactor-etf
 ```
 
-## 初始化因子库
+## 运行
 
 ```bash
-python main.py init-db
-```
-
-默认会创建 `data/etf_factor.duckdb`。
-
-这一步会清理旧版遗留的：
-
-- `factor_values`
-- `factor_ic_daily`
-- `factor_metrics`
-- `factor_definitions`
-
-## 更新因子
-
-```bash
-python main.py update
+python main.py
 ```
 
 默认行为：
 
+- 自动检查 `etf_factor` 表是否存在，不存在就创建
 - 检查上游 `etf_daily` 的最新交易日
 - 检查每个因子在 `etf_factor` 中是否已更新到该日期
 - 只重算落后的因子
 - 已是最新的因子直接跳过
 
-## 常用参数
+## 可选参数
 
 ```bash
-python main.py update --factor-name momentum
-python main.py update --factor-name momentum --factor-name rsi
-python main.py update --force
+python main.py --force
 ```
+
+- `--force`：忽略最新日期检查，强制重算并覆盖全部因子
 
 ## 表结构
 

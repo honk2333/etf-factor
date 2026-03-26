@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 
 import duckdb
@@ -32,37 +31,10 @@ CREATE INDEX IF NOT EXISTS idx_etf_factor_symbol_date
 ON etf_factor (symbol, trade_date);
 """
 
-
-@dataclass
-class MarketDataBundle:
-    data_dict: dict[str, pd.DataFrame]
-    universe_mask: pd.DataFrame
-
-
-@dataclass
-class ComputeSummary:
-    symbol_count: int
-    factor_count: int
-    refreshed_factor_count: int
-    skipped_factor_count: int
-    rows_written: int
-    latest_trade_date: object
-
-
 def connect_db(path: Path, read_only: bool = False) -> duckdb.DuckDBPyConnection:
     if not read_only:
         path.parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(str(path), read_only=read_only)
-
-
-def init_factor_db(path: Path) -> None:
-    conn = connect_db(path)
-    conn.execute("DROP TABLE IF EXISTS factor_definitions")
-    conn.execute("DROP TABLE IF EXISTS factor_values")
-    conn.execute("DROP TABLE IF EXISTS factor_ic_daily")
-    conn.execute("DROP TABLE IF EXISTS factor_metrics")
-    conn.execute(SCHEMA_SQL)
-    conn.close()
 
 
 def ensure_factor_table(path: Path) -> duckdb.DuckDBPyConnection:
@@ -71,7 +43,7 @@ def ensure_factor_table(path: Path) -> duckdb.DuckDBPyConnection:
     return conn
 
 
-def load_market_data(source_db: Path) -> MarketDataBundle:
+def load_market_data(source_db: Path):
     conn = connect_db(source_db, read_only=True)
     df = conn.execute(
         """
@@ -83,7 +55,7 @@ def load_market_data(source_db: Path) -> MarketDataBundle:
     conn.close()
 
     if df.empty:
-        return MarketDataBundle(data_dict={}, universe_mask=pd.DataFrame())
+        return {}, pd.DataFrame()
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     data_dict: dict[str, pd.DataFrame] = {}
@@ -100,7 +72,7 @@ def load_market_data(source_db: Path) -> MarketDataBundle:
     )
     universe_mask.columns = universe_mask.columns.astype(str)
     universe_mask = universe_mask.sort_index()
-    return MarketDataBundle(data_dict=data_dict, universe_mask=universe_mask)
+    return data_dict, universe_mask
 
 
 def apply_universe_mask(frame: pd.DataFrame, universe_mask: pd.DataFrame) -> pd.DataFrame:
@@ -163,29 +135,21 @@ def replace_factor_values(conn, factor_key: str, factor_name: str, params_json: 
     return int(len(long_df))
 
 
-def update_factors(source_db: Path, factor_db: Path, factor_names: set[str] | None = None, force: bool = False) -> ComputeSummary:
-    bundle = load_market_data(source_db)
-    if not bundle.data_dict:
+def update_factors(source_db: Path, factor_db: Path, force: bool = False):
+    data_dict, universe_mask = load_market_data(source_db)
+    if not data_dict:
         raise RuntimeError("未从 etf-data 读取到可用 ETF 日线数据")
 
     latest_trade_date = get_latest_trade_date(source_db)
     conn = ensure_factor_table(factor_db)
 
-    selected_registry = [
-        (factor_func, params_list)
-        for factor_func, params_list in FACTOR_REGISTRY
-        if factor_names is None or factor_func.__name__ in factor_names
-    ]
-    if not selected_registry:
-        raise ValueError("未匹配到任何因子，请检查 --factor-name 参数")
-
-    total = sum(len(params_list) for _, params_list in selected_registry)
+    total = sum(len(params_list) for _, params_list in FACTOR_REGISTRY)
     refreshed = 0
     skipped = 0
     rows_written = 0
     count = 0
 
-    for factor_func, params_list in selected_registry:
+    for factor_func, params_list in FACTOR_REGISTRY:
         for params in params_list:
             factor_key, factor_name, params_json = factor_identity(factor_func, params)
             factor_latest_trade_date = get_factor_latest_trade_date(conn, factor_key)
@@ -196,7 +160,7 @@ def update_factors(source_db: Path, factor_db: Path, factor_names: set[str] | No
                     print(f"进度: {count}/{total}")
                 continue
 
-            factor_df = compute_factor_matrix(bundle.data_dict, factor_func, bundle.universe_mask, **params)
+            factor_df = compute_factor_matrix(data_dict, factor_func, universe_mask, **params)
             rows_written += replace_factor_values(conn, factor_key, factor_name, params_json, factor_df)
             refreshed += 1
             count += 1
@@ -204,53 +168,35 @@ def update_factors(source_db: Path, factor_db: Path, factor_names: set[str] | No
                 print(f"进度: {count}/{total}")
 
     conn.close()
-    return ComputeSummary(
-        symbol_count=len(bundle.data_dict),
-        factor_count=total,
-        refreshed_factor_count=refreshed,
-        skipped_factor_count=skipped,
-        rows_written=rows_written,
-        latest_trade_date=latest_trade_date,
-    )
+    return {
+        "symbol_count": len(data_dict),
+        "factor_count": total,
+        "refreshed_factor_count": refreshed,
+        "skipped_factor_count": skipped,
+        "rows_written": rows_written,
+        "latest_trade_date": latest_trade_date,
+    }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ETF factor data management")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    init_parser = subparsers.add_parser("init-db", help="初始化因子库")
-    init_parser.add_argument("--factor-db", default=str(FACTOR_DB_PATH), help="因子 DuckDB 路径")
-
-    update_parser = subparsers.add_parser("update", help="检查并更新因子")
-    update_parser.add_argument("--source-db", default=str(SOURCE_DB_PATH), help="上游日线 DuckDB 路径")
-    update_parser.add_argument("--factor-db", default=str(FACTOR_DB_PATH), help="因子 DuckDB 路径")
-    update_parser.add_argument(
-        "--factor-name",
-        action="append",
-        default=None,
-        help="仅更新指定因子，可重复传入",
-    )
-    update_parser.add_argument("--force", action="store_true", help="忽略最新日期检查，强制重算并覆盖")
+    parser.add_argument("--source-db", default=str(SOURCE_DB_PATH), help="上游日线 DuckDB 路径")
+    parser.add_argument("--factor-db", default=str(FACTOR_DB_PATH), help="因子 DuckDB 路径")
+    parser.add_argument("--force", action="store_true", help="忽略最新日期检查，强制重算并覆盖")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.command == "init-db":
-        init_factor_db(Path(args.factor_db))
-        print(f"因子库已初始化: {args.factor_db}")
-        return
-
     summary = update_factors(
         source_db=Path(args.source_db),
         factor_db=Path(args.factor_db),
-        factor_names=set(args.factor_name) if args.factor_name else None,
         force=args.force,
     )
     print(
-        f"完成: symbols={summary.symbol_count}, factors={summary.factor_count}, "
-        f"refreshed={summary.refreshed_factor_count}, skipped={summary.skipped_factor_count}, "
-        f"rows_written={summary.rows_written}, latest_trade_date={summary.latest_trade_date}"
+        f"完成: symbols={summary['symbol_count']}, factors={summary['factor_count']}, "
+        f"refreshed={summary['refreshed_factor_count']}, skipped={summary['skipped_factor_count']}, "
+        f"rows_written={summary['rows_written']}, latest_trade_date={summary['latest_trade_date']}"
     )
 
 
