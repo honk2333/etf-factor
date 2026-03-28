@@ -20,15 +20,8 @@ CREATE TABLE IF NOT EXISTS etf_factor (
     factor_name VARCHAR NOT NULL,
     params_json VARCHAR NOT NULL,
     value DOUBLE,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (trade_date, symbol, factor_key)
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_etf_factor_factor_date
-ON etf_factor (factor_key, trade_date);
-
-CREATE INDEX IF NOT EXISTS idx_etf_factor_symbol_date
-ON etf_factor (symbol, trade_date);
 """
 
 
@@ -40,6 +33,14 @@ def connect_db(path: Path, read_only: bool = False) -> duckdb.DuckDBPyConnection
 
 def ensure_factor_table(path: Path) -> duckdb.DuckDBPyConnection:
     conn = connect_db(path)
+    table_exists = conn.execute(
+        "select count(*) from information_schema.tables where table_name = 'etf_factor'"
+    ).fetchone()[0]
+    if table_exists:
+        table_info = conn.execute("pragma table_info('etf_factor')").fetchall()
+        has_primary_key = any(row[5] for row in table_info)
+        if has_primary_key:
+            conn.execute("drop table etf_factor")
     conn.execute(SCHEMA_SQL)
     return conn
 
@@ -104,30 +105,31 @@ def compute_factor_matrix(
 def replace_factor_values(
     conn, factor_key: str, factor_name: str, params_json: str, factor_df: pd.DataFrame
 ) -> int:
-    long_df = (
-        factor_df.rename_axis(index="trade_date", columns="symbol")
-        .reset_index()
-        .melt(id_vars="trade_date", var_name="symbol", value_name="value")
-    )
-    long_df["trade_date"] = pd.to_datetime(long_df["trade_date"]).dt.date
-    long_df["symbol"] = long_df["symbol"].astype(str)
-    long_df["factor_key"] = factor_key
-    long_df["factor_name"] = factor_name
-    long_df["params_json"] = params_json
-
-    conn.register("etf_factor_stage", long_df)
     conn.execute("DELETE FROM etf_factor WHERE factor_key = ?", [factor_key])
-    conn.execute(
-        """
-        INSERT INTO etf_factor (
-            trade_date, symbol, factor_key, factor_name, params_json, value
+    total_rows = 0
+    for symbol in factor_df.columns:
+        series = factor_df[symbol]
+        rows = [
+            (
+                idx.date(),
+                str(symbol),
+                factor_key,
+                factor_name,
+                params_json,
+                None if pd.isna(val) else float(val),
+            )
+            for idx, val in series.items()
+        ]
+        conn.executemany(
+            """
+            INSERT INTO etf_factor (
+                trade_date, symbol, factor_key, factor_name, params_json, value
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
         )
-        SELECT trade_date, symbol, factor_key, factor_name, params_json, value
-        FROM etf_factor_stage
-        """
-    )
-    conn.unregister("etf_factor_stage")
-    return int(len(long_df))
+        total_rows += len(rows)
+    return total_rows
 
 
 def update_factors(source_db: Path, factor_db: Path, force: bool = False):
